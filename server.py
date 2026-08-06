@@ -492,7 +492,10 @@ def write_config_yaml(data: dict[str, str], *, reset_model: bool = False) -> Non
 
     merged_terminal = dict(merged.get("terminal") if isinstance(merged.get("terminal"), dict) else {})
     merged_terminal["backend"] = "local"
-    merged_terminal["timeout"] = 60
+    # Builds, test suites, package installs, and reporting jobs routinely exceed
+    # one minute. Keep a practical default while individual tools may still
+    # request a shorter or longer timeout explicitly.
+    merged_terminal["timeout"] = 180
     merged_terminal["cwd"] = "/tmp"
     merged["terminal"] = merged_terminal
 

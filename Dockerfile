@@ -1,3 +1,17 @@
+FROM rust:1.97-bookworm AS google-ads-mcp-builder
+
+# Build the Google Ads MCP once in the image instead of relying on an
+# ephemeral runtime compiler. Pin the source revision for reproducible builds.
+ARG GOOGLE_ADS_MCP_REF=a3d2411606cf52a7e890e4740dc2c77707e64ee5
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates git && \
+    git clone https://github.com/FGRibreau/mcp-google-ads.git /src/mcp-google-ads && \
+    cd /src/mcp-google-ads && \
+    git checkout ${GOOGLE_ADS_MCP_REF} && \
+    cargo build --release && \
+    strip target/release/mcp-google-ads && \
+    rm -rf /var/lib/apt/lists/*
+
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 # Which hermes-agent revision to install. Accepts any git ref the upstream
@@ -83,6 +97,11 @@ RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/h
 # still refuses. Re-verify the install-tree path if hermes stops installing
 # editable from /opt/hermes-agent.
 RUN printf 'docker\n' > /opt/hermes-agent/.install_method
+
+# Ship a known-working Google Ads MCP binary in the immutable image. start.sh
+# copies this into the persistent /data volume so existing Hermes MCP config
+# can use a stable path that survives Railway redeploys.
+COPY --from=google-ads-mcp-builder /src/mcp-google-ads/target/release/mcp-google-ads /usr/local/bin/mcp-google-ads
 
 COPY requirements.txt /app/requirements.txt
 RUN uv pip install --system --no-cache -r /app/requirements.txt

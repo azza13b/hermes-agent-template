@@ -39,6 +39,14 @@ fi
 
 [ ! -f /data/.hermes/.env ] && touch /data/.hermes/.env
 
+# Refresh the Google Ads MCP binary from the immutable image into a stable path
+# on the persistent volume. Credentials and config remain under /data; only the
+# executable is replaced when a new image intentionally pins a newer build.
+if [ -x /usr/local/bin/mcp-google-ads ]; then
+  mkdir -p /data/tools/google-ads-mcp/bin
+  install -m 0755 /usr/local/bin/mcp-google-ads /data/tools/google-ads-mcp/bin/mcp-google-ads
+fi
+
 # Bootstrap OAuth tokens from env var (e.g. xAI Grok SuperGrok).
 # Set HERMES_AUTH_JSON_BOOTSTRAP to the contents of a locally-generated
 # ~/.hermes/auth.json. Written only once — subsequent token refreshes update
