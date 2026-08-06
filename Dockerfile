@@ -1,3 +1,24 @@
+FROM debian:bookworm-slim AS sqlite-builder
+
+# Build a WAL-reset-safe SQLite release and verify the upstream archive before
+# compiling it. Python's stdlib sqlite3 extension dynamically links libsqlite3,
+# so installing this shared library into /usr/local in the runtime stage makes
+# Hermes use the fixed release without replacing Python itself.
+ARG SQLITE_AUTOCONF_VERSION=3510300
+ARG SQLITE_SHA256=81f5be397049b0cae1b167f2225af7646fc0f82e4a9b3c48c9ea3a533e21d77a
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl && \
+    curl -fsSLo /tmp/sqlite.tar.gz \
+      https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz && \
+    echo "${SQLITE_SHA256}  /tmp/sqlite.tar.gz" | sha256sum -c - && \
+    mkdir -p /tmp/sqlite-src && \
+    tar -xzf /tmp/sqlite.tar.gz -C /tmp/sqlite-src --strip-components=1 && \
+    cd /tmp/sqlite-src && \
+    ./configure --prefix=/opt/sqlite --enable-shared --disable-static \
+      --fts3 --fts4 --fts5 --rtree --session --dbstat && \
+    make -j"$(nproc)" && \
+    make install
+
 FROM rust:1.97-bookworm AS google-ads-mcp-builder
 
 # Build the Google Ads MCP once in the image instead of relying on an
@@ -12,7 +33,16 @@ RUN apt-get update && \
     strip target/release/mcp-google-ads && \
     rm -rf /var/lib/apt/lists/*
 
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS sqlite-runtime
+
+# Override bookworm's vulnerable SQLite 3.40.1 with the verified shared
+# library built above. Fail the image build unless Python actually loads the
+# fixed version; merely copying a newer sqlite3 CLI is not sufficient.
+COPY --from=sqlite-builder /opt/sqlite/ /usr/local/
+RUN ldconfig && \
+    python -c "import sqlite3; print(sqlite3.sqlite_version); assert sqlite3.sqlite_version_info >= (3, 51, 3); assert sqlite3.connect(':memory:').execute(\"select sqlite_compileoption_used('ENABLE_FTS5')\").fetchone()[0] == 1"
+
+FROM sqlite-runtime AS hermes-runtime
 
 # Which hermes-agent revision to install. Accepts any git ref the upstream
 # repo publishes — a release tag (recommended for reproducibility) or a
