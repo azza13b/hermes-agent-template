@@ -631,6 +631,17 @@ def _has_xai_oauth_tokens() -> bool:
         return False
 
 
+def _has_codex_oauth_tokens() -> bool:
+    """True when Hermes can refresh an OpenAI Codex OAuth session."""
+    auth_path = Path(HERMES_HOME) / "auth.json"
+    try:
+        data = json.loads(auth_path.read_text())
+        tokens = data.get("providers", {}).get("openai-codex", {}).get("tokens", {})
+        return bool(isinstance(tokens, dict) and tokens.get("refresh_token"))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
 def _save_xai_auth_json(tokens: dict) -> None:
     """Write xAI OAuth tokens to auth.json in hermes's expected format."""
     auth_path = Path(HERMES_HOME) / "auth.json"
@@ -858,7 +869,8 @@ def is_config_complete(data: dict[str, str] | None = None) -> bool:
     if data is None:
         data = read_env(ENV_FILE)
     has_model = bool(data.get("LLM_MODEL"))
-    has_provider = any(data.get(k) for k in PROVIDER_KEYS) or _has_xai_oauth_tokens()
+    has_provider = (any(data.get(k) for k in PROVIDER_KEYS)
+                    or _has_xai_oauth_tokens() or _has_codex_oauth_tokens())
     return has_model and has_provider
 
 
