@@ -66,12 +66,22 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 HERMES_HOME = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
 ENV_FILE = Path(HERMES_HOME) / ".env"
 
-# The Hermes release this image pins. The Dockerfile promotes its `ARG
-# HERMES_REF` to an ENV so we can read it here; a Railway service variable of
-# the same name (the documented way to pin an older release) shadows that ENV,
-# so this always reflects what actually got built rather than a hardcoded
-# string that would go stale — or worse, misreport after a deliberate rollback.
-HERMES_VERSION = os.environ.get("HERMES_REF", "").strip()
+def installed_hermes_version(stamp_path: Path = Path("/opt/hermes-agent/install-stamp.json")) -> str:
+    """Read built image identity, not an independently overridden Railway variable."""
+    try:
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return os.environ.get("HERMES_REF", "").strip()  # Older images lack a stamp.
+    except (OSError, ValueError):
+        return "unknown"
+    version = stamp.get("displayVersion") if isinstance(stamp, dict) else None
+    if not isinstance(version, str) or not version.strip():
+        return "unknown"
+    version = version.strip()
+    return f"v{version}" if re.match(r"^\d+\.", version) else version
+
+
+HERMES_VERSION = installed_hermes_version()
 
 
 def _resolve_pairing_dir() -> Path:
@@ -407,9 +417,10 @@ def write_config_yaml(data: dict[str, str], *, reset_model: bool = False) -> Non
                 loaded = yaml.safe_load(f)
             if isinstance(loaded, dict):
                 existing = loaded
-        except (yaml.YAMLError, OSError):
-            # Treat unparseable as absent — we'll overwrite with template defaults.
-            existing = {}
+        except (yaml.YAMLError, OSError) as exc:
+            raise ValueError("Cannot read existing config.yaml; refusing to overwrite it") from exc
+        if loaded is not None and not isinstance(loaded, dict):
+            raise ValueError("Existing config.yaml must be a mapping; refusing to overwrite it")
 
     merged = dict(existing)
 
@@ -533,8 +544,11 @@ def write_config_yaml(data: dict[str, str], *, reset_model: bool = False) -> Non
     else:
         merged.pop("custom_providers", None)
 
-    with config_path.open("w") as f:
-        yaml.safe_dump(merged, f, sort_keys=False, default_flow_style=False)
+    # Use the release's atomic, comment-preserving writer. Some deployment-
+    # managed fields are deliberately removed above, so pass the full merged
+    # state through the explicit replacement API rather than a direct dump.
+    from hermes_cli.config import atomic_config_replace
+    atomic_config_replace(config_path, merged)
 
 
 def build_hermes_env() -> dict[str, str]:
@@ -1122,7 +1136,7 @@ class Gateway:
             # class of stuck-lock — it force-kills whatever holds the lock
             # (graceful SIGTERM, escalating to SIGKILL) before claiming it.
             self.proc = await asyncio.create_subprocess_exec(
-                "hermes", "gateway", "run", "--replace",
+                "hermes", "gateway", "run", "--replace", "--external-supervisor",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,

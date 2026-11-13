@@ -11,6 +11,37 @@ release.
 
 ---
 
+## v0.23.1 custom-image upgrade (staging verification required)
+
+- Pin upstream Hermes **v0.23.1**, commit
+  `3b421578588243f920886e6fe79a6faa87ea026e`, with canonical install-stamp
+  metadata and image provenance; updates are image-managed (`external`).
+- Migrate the build/runtime to **Python 3.14** and upstream PM-owned pinned
+  Python/uv/Node >=26/pnpm, sealed dependencies, and prebuilt web/TUI artifacts.
+  Wrapper requirements are constrained against agent dependencies. Keep loaded
+  SQLite >=3.51.3 with FTS5 trigram support.
+- Retain this template's custom UI, public `$PORT`, private dashboard `9119`,
+  `/data` volume, and `HERMES_TUI_DIR`; no migration to the official s6 image.
+  Gateway subprocesses use the external-supervisor CLI contract. Version badges
+  read runtime install metadata, not the `HERMES_REF` environment label.
+- Add full-image CI for pull requests, manual dispatch, and pushes to `main` or
+  `upgrade/hermes-v0.23.1`, alongside the unchanged SQLite-only workflow. Run
+  isolated wrapper unit tests with fake admin credentials, then full build,
+  offline runtime/CLI checks, and ephemeral wrapper/login/native-dashboard
+  readiness checks. No real credentials, provider calls, or gateway starts are
+  required by these smoke checks.
+- Document staging-first rollout, stale Railway `HERMES_REF` override removal,
+  and a secure backup of **all `/data/.hermes` profiles/config/auth/state** before
+  actual deployment. Preserve the volume; do not reset config. No automatic
+  migration or successful production upgrade is implied by a git push.
+
+Full Docker build and container smoke results must be obtained on a
+Docker-equipped runner before rollout; these release notes are not proof of a
+successful build or live deployment. The historical admin UI release copy below
+has not been rewritten as part of these documentation/CI changes.
+
+---
+
 ## release/v2026.7.20/2 — July 30, 2026
 **Hermes v2026.7.20 · minor**
 

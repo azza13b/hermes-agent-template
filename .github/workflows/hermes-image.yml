@@ -1,0 +1,34 @@
+name: Full Hermes release image
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main, upgrade/hermes-v0.23.1]
+
+permissions:
+  contents: read
+
+jobs:
+  full-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ADMIN_USERNAME: ci-fake-admin
+      ADMIN_PASSWORD: CI-FAKE-NOT-A-REAL-PASSWORD
+      HERMES_HOME: ${{ runner.temp }}/hermes-release-unit-home
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Wrapper unit tests (runner Python, isolated home)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HERMES_HOME"
+          python3 -m venv "$RUNNER_TEMP/hermes-wrapper-tests"
+          "$RUNNER_TEMP/hermes-wrapper-tests/bin/python" -m pip install -r requirements.txt
+          "$RUNNER_TEMP/hermes-wrapper-tests/bin/python" -m unittest discover -s tests -v
+      - name: Build complete release image
+        run: docker build --tag hermes-template:v0.23.1-test .
+      - name: Verify offline runtime and ephemeral wrapper/dashboard readiness
+        run: bash tests/test_runtime_image.sh hermes-template:v0.23.1-test

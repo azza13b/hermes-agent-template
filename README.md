@@ -68,7 +68,7 @@ Message your Telegram bot. If you're a new user, a pairing request will appear i
 | `PORT` | `8080` | Web server port (set automatically by Railway) |
 | `ADMIN_USERNAME` | `admin` | Login username |
 | `ADMIN_PASSWORD` | *(auto-generated)* | Login password — if unset, a random password is printed to the deploy logs. Changing it redeploys the service, which signs everyone out. |
-| `HERMES_REF` | *(pinned in Dockerfile)* | Hermes Agent version to install (any upstream git tag/branch). Set this to override the Dockerfile default without editing code — see [Updating Hermes](#updating-hermes). |
+| `HERMES_REF` | `v0.23.1` (Docker build arg) | Build selector, not a runtime version badge. Must match the admitted release commit; remove stale Railway overrides before upgrading — see [Updating Hermes](#updating-hermes). |
 
 All other configuration (LLM provider, model, channels, tools) is managed through the admin dashboard.
 
@@ -120,12 +120,82 @@ Open `http://localhost:8080` and log in with `admin` / `changeme`.
 
 ## Updating Hermes
 
-This template pins a specific Hermes Agent release in the `Dockerfile` (`ARG HERMES_REF`, currently `v2026.7.20`). To upgrade:
+### v0.23.1 custom-image upgrade
 
-- **Recommended:** set a `HERMES_REF` service variable in Railway to any upstream [release tag](https://github.com/NousResearch/hermes-agent/releases) (e.g. `v2026.7.20`), then redeploy. It's passed in as a Docker build arg and overrides the Dockerfile default — no code change needed.
-- **Or** bump `ARG HERMES_REF` in the `Dockerfile` and redeploy.
+This custom template pins **Hermes v0.23.1** at upstream commit
+`3b421578588243f920886e6fe79a6faa87ea026e`. Both `HERMES_REF` and
+`HERMES_COMMIT` must match the admitted release; an arbitrary ref override is not
+an upgrade procedure. A stale Railway **`HERMES_REF` service/build variable** can
+override the Dockerfile default: remove it or update it to `v0.23.1` before
+building. The build helper also validates the admitted commit.
 
-The "Update" button inside the Hermes dashboard is a **no-op on Railway** (it detects a container install and refuses) — the image is immutable, so a runtime self-update wouldn't survive a redeploy. Bump `HERMES_REF` and redeploy instead. When jumping releases, re-check that the Dockerfile's install extras still match upstream's `pyproject.toml`.
+The runtime moves from the older Python 3.11 / ad-hoc install path to **Python
+3.14** with the upstream package manager (**PM**) owning pinned Python, uv,
+**Node >=26**, and pnpm from the release's `pm/lock.json`. PM's sealed environment
+and frontend build scripts prepare the agent dependencies, native web assets,
+and TUI bundle. This is not just a version-label change. The wrapper's
+`requirements.txt` dependencies are installed into that same environment under
+constraints captured from the agent dependencies; conflicts fail the build
+rather than silently upgrading the agent. The loaded SQLite library remains
+**>=3.51.3**, including functional FTS5 trigram support.
+
+This remains the **custom Railway UI and supervisor**, not a migration to the
+official image's s6 supervisor. Public port `$PORT` (default `8080`), private
+loopback dashboard `9119`, and persistent `/data` volume are retained.
+`HERMES_TUI_DIR=/opt/hermes-agent/ui-tui` is retained for the prebuilt TUI.
+The gateway uses `hermes gateway run --external-supervisor` so this template,
+not a second upstream supervisor, owns restarts. The runtime version badge reads
+the built `install-stamp.json` through Hermes version metadata, **not the
+`HERMES_REF` environment variable**. The stamp and image provenance describe the
+actual installed version/commit with `updateMechanism: external`.
+
+#### Safe rollout
+
+1. **Before any actual deployment, back up all of `/data/.hermes`**, including
+   every profile, config, `.env`, authentication, sessions, databases, and state.
+   Store the backup securely outside the container; it contains credentials.
+   Confirm you can restore it. Preserve the existing `/data` volume and keep the
+   previous image/release available for rollback.
+2. Review [upstream release notes](https://github.com/NousResearch/hermes-agent/releases/tag/v0.23.1),
+   [current Hermes documentation](https://hermes-agent.nousresearch.com/docs/),
+   and the release's `pyproject.toml` / PM lock. Dependency/build ownership is in
+   `Dockerfile` and `scripts/build_hermes.py`; wrapper dependencies remain in
+   `requirements.txt`. Wrapper startup/gateway compatibility is in `start.sh`
+   and `server.py`. This change also updates release CI, runtime probes, and
+   these upgrade notes; the SQLite-only CI is retained separately.
+3. **Build and test a staging image first**, with no production volume or
+   provider credentials. CI runs wrapper unit tests, the full Docker build,
+   offline runtime checks, then ephemeral wrapper and native-dashboard smoke
+   checks. Run the same image checks locally on a Docker-equipped host:
+
+   ```bash
+   docker build -t hermes-template:v0.23.1-test .
+   bash tests/test_runtime_image.sh hermes-template:v0.23.1-test
+   ```
+
+   These checks use disposable containers, no network, a read-only probe mount,
+   and clearly fake admin credentials. They check CLI version/help but do not
+   start a gateway, query a provider, or test real messaging/order integrations.
+   `/health` alone is not dashboard readiness: the native dashboard's HTML and
+   built JavaScript must also respond on container-local `9119`.
+4. Only after reviewing successful build/smoke results, merge the update into
+   your linked deployment branch. Railway rebuilds and redeploys automatically
+   when GitHub auto-deploy is enabled; no separate Railway settings change or
+   manual restart is normally required. Otherwise use your existing deployment
+   workflow. Keep the **existing volume preserved**. Verify the running
+   version/commit from runtime metadata, login, and native dashboard
+   readiness. Validate your own provider/channel configuration separately when
+   ready. A git push or changed build argument alone does **not** prove a running
+   deployment has upgraded.
+
+Do not reset configuration as an upgrade step. These instructions make no
+promise of automatic profile/config/database migration or rollback compatibility.
+If state compatibility is uncertain, test a securely isolated backup copy before
+reusing live state. Image-managed installs use external updates: rebuild and
+redeploy the admitted image instead of trying to self-update the running
+container. Future upstream versions need an explicit review of the release
+commit, PM/toolchain pins, extras, build scripts, wrapper compatibility, and
+verification expectations—not merely a changed `HERMES_REF`.
 
 ## Credits
 
