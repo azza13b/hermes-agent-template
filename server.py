@@ -41,6 +41,7 @@ import zipfile
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode
 
 import httpx
 import websockets
@@ -1076,6 +1077,13 @@ async def logout(request: Request) -> Response:
     return resp
 
 
+async def native_logout(request: Request) -> Response:
+    """The native widget must end the outer login, not just native cookies."""
+    if err := guard(request):
+        return err
+    return await logout(request)
+
+
 # ── Gateway manager ───────────────────────────────────────────────────────────
 # Auto-respawn tuning. When the gateway exits without us asking it to — an
 # in-band `/restart` (inside a container hermes exits 75 expecting a supervisor
@@ -1286,6 +1294,9 @@ class Dashboard:
         self.proc: asyncio.subprocess.Process | None = None
         self.logs: deque[str] = deque(maxlen=300)
         self._drain_task: asyncio.Task | None = None
+        # A deployment credential for this private loopback hop only. Never put
+        # it in profile files, the gateway environment, logs, or browser HTML.
+        self._session_token = secrets.token_urlsafe(32)
 
     async def start(self):
         if self.proc and self.proc.returncode is None:
@@ -1310,7 +1321,7 @@ class Dashboard:
                 # so the PTY child spawns instantly on first chat connect.
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                env=build_hermes_env(),
+                env={**build_hermes_env(), "HERMES_DASHBOARD_SESSION_TOKEN": self._session_token},
             )
             print(f"[dashboard] spawned pid={self.proc.pid} → {HERMES_DASHBOARD_URL}", flush=True)
             self._drain_task = asyncio.create_task(self._drain())
@@ -1323,6 +1334,7 @@ class Dashboard:
         try:
             async for raw in self.proc.stdout:
                 line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
+                line = line.replace(self._session_token, "[redacted]")
                 self.logs.append(line)
                 print(f"[dashboard] {line}", flush=True)
         except Exception as e:
@@ -1369,41 +1381,18 @@ def get_http_client() -> httpx.AsyncClient:
         _http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=5.0),
             follow_redirects=False,
+            trust_env=False,  # Never send loopback credentials through HTTP(S)_PROXY.
         )
     return _http_client
 
 
-_HERMES_SESSION_TOKEN_RE = re.compile(r'__HERMES_SESSION_TOKEN__\s*=\s*"([^"]*)"')
-
-
 async def _get_hermes_session_token() -> str:
-    """Scrape the dashboard's own ephemeral session token from its SPA shell.
+    """Return the process-private credential provisioned to our dashboard child.
 
-    Hermes gates every non-public ``/api/*`` route behind a per-process
-    random ``_SESSION_TOKEN`` — a legacy check in hermes_cli/web_server.py's
-    ``auth_middleware`` that's SEPARATE from (and still active alongside) the
-    OAuth gate that invariant 3 already covers. Loopback bind only turns off
-    the OAuth gate (``auth_required``); it does not exempt this token check.
-    A tokenless call like a plain server-to-server POST 401s unconditionally.
-
-    The only way to obtain a valid token without a browser is the same way
-    the SPA itself does: on a loopback (ungated) bind, hermes injects it into
-    every served HTML shell as ``window.__HERMES_SESSION_TOKEN__="..."``
-    (hermes_cli/web_server.py's ``_serve_index``). That HTML-serving catch-all
-    route is not under ``/api/``, so it is never itself gated — no chicken-
-    and-egg problem. Not cached: cheap (one loopback GET), and self-heals
-    across a dashboard restart (which rotates the token) without needing
-    invalidation logic. Re-verify the injected variable name against
-    hermes_cli/web_server.py on a Hermes version bump — if it's ever renamed
-    or removed, this degrades to the pre-existing "no token" 401 handled
-    below, not a crash.
+    Gated native HTML deliberately withholds its token. Scraping it cannot
+    bootstrap an authenticated deployment and would leak credentials to a UI.
     """
-    client = get_http_client()
-    resp = await client.get(f"{HERMES_DASHBOARD_URL}/", timeout=httpx.Timeout(10.0))
-    resp.raise_for_status()
-    match = _HERMES_SESSION_TOKEN_RE.search(resp.text)
-    return match.group(1) if match else ""
-
+    return dash._session_token
 
 async def set_active_model_via_hermes(
     provider_id: str, model: str, *, base_url: str = "", api_key: str = ""
@@ -2083,7 +2072,14 @@ async def _proxy_to_dashboard(request: Request) -> Response:
     req_headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in HOP_BY_HOP
+        and k.lower() not in {"authorization", "proxy-authorization", "x-hermes-session-token", "x-hermes-gateway-ticket"}
     }
+    # The native gate gives Bearer priority over cookies and the session header.
+    # Never let browser-supplied auth select a different upstream identity.
+    req_headers.update({
+        "Authorization": f"Bearer {dash._session_token}",
+        _SESSION_TOKEN_HEADER: dash._session_token,
+    })
     body = await request.body()
 
     try:
@@ -2111,12 +2107,14 @@ async def _proxy_to_dashboard(request: Request) -> Response:
 
     # Strip hop-by-hop and length/encoding headers — Starlette recomputes them.
     resp_headers = {
-        k: v for k, v in upstream.headers.items()
+        k: v.replace(dash._session_token, "[redacted]") for k, v in upstream.headers.items()
         if k.lower() not in HOP_BY_HOP
         and k.lower() not in ("content-encoding", "content-length")
     }
 
-    content = upstream.content
+    # Ungated loopback native HTML normally embeds the token. This proxy owns
+    # auth in both modes, so no response (including env reveal) may publish it.
+    content = upstream.content.replace(dash._session_token.encode(), b"[redacted]")
     content_type = upstream.headers.get("content-type", "").lower()
 
     # Inject the "← Setup" widget into HTML pages so users can always return,
@@ -2315,18 +2313,22 @@ async def ws_proxy(websocket: WebSocket) -> None:
         await websocket.close(code=4401)
         return
 
-    # 2. Build upstream URL preserving the SPA's path + query (the query
-    #    contains the hermes session token + channel id).
+    # Native WS supports a provider-verified deployment token in its query.
+    # Keep native one-use tickets (including socket-specific tickets), but
+    # replace standing client credentials only AFTER wrapper authentication.
     path = websocket.url.path
-    qs = websocket.url.query
-    upstream_url = f"ws://{HERMES_DASHBOARD_HOST}:{HERMES_DASHBOARD_PORT}{path}"
-    if qs:
-        upstream_url = f"{upstream_url}?{qs}"
+    query = [(k, v) for k, v in parse_qsl(websocket.url.query, keep_blank_values=True)
+             if k not in {"token", "internal"}]
+    query.append(("token", dash._session_token))
+    upstream_url = (
+        f"ws://{HERMES_DASHBOARD_HOST}:{HERMES_DASHBOARD_PORT}{path}?{urlencode(query)}"
+    )
 
     try:
         upstream = await websockets.connect(
             upstream_url,
             open_timeout=5,
+            proxy=None,  # Private credentials must never traverse environment proxies.
             # No keepalive on the loopback hop. hermes v2026.7.20 disabled its
             # own side for a loopback bind (uvicorn ws_ping_interval/timeout
             # went 30s/60s -> None/None) because a GIL-bound agent turn can
@@ -2346,7 +2348,8 @@ async def ws_proxy(websocket: WebSocket) -> None:
     except (asyncio.TimeoutError, OSError, websockets.exceptions.WebSocketException) as e:
         # Hermes dashboard down, restarting, or rejected the upgrade
         # (e.g. bad/missing session token).
-        print(f"[ws-proxy] upstream connect failed for {path}: {e!r}", flush=True)
+        error = repr(e).replace(dash._session_token, "[redacted]")
+        print(f"[ws-proxy] upstream connect failed for {path}: {error}", flush=True)
         # 1011 = internal error; client SPA will surface a generic close.
         await websocket.close(code=1011)
         return
@@ -2391,6 +2394,7 @@ routes = [
     Route("/login",                             page_login,          methods=["GET"]),
     Route("/login",                             login_post,          methods=["POST"]),
     Route("/logout",                            logout),
+    Route("/auth/logout",                       native_logout,       methods=["POST"]),
 
     # Our setup wizard + management API, all under /setup/* (cookie-auth guarded).
     Route("/setup",                             page_index),

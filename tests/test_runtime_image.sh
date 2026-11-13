@@ -23,15 +23,19 @@ docker run --rm --network none --read-only \
   --entrypoint /opt/hermes-agent/.venv/bin/python \
   "$IMAGE" /release-tests/runtime_image_probe.py offline
 
-# Fresh, isolated writable container layer; no published ports, external network,
+# Phase 2 reproduces a public-URL Railway deployment with a fresh home and no
 # provider keys, bootstrap auth, persistent volume, or gateway-start request.
+# Never supply a native session token here: the wrapper must provision its own
+# private subprocess credential, or upstream correctly refuses this public bind.
 CID="$(docker run --detach --network none \
   --env PORT=8080 --env HOME=/data --env HERMES_HOME=/data/.hermes \
+  --env HERMES_DASHBOARD_PUBLIC_URL=https://ci-hermes.invalid \
   --env ADMIN_USERNAME=ci-fake-admin --env ADMIN_PASSWORD=CI-FAKE-NOT-A-REAL-PASSWORD \
   --mount "type=bind,src=${TEST_DIR},dst=/release-tests,readonly" \
   "$IMAGE")"
-# Every retry performs real HTTP requests. A wrapper-only /health success is not
-# enough: native dashboard HTML and its prebuilt JavaScript must also be served.
+# Every retry performs the full public-URL regression: wrapper cookie login,
+# native auth protection/identity, built HTML/JS, and WebSocket admission.
+# A wrapper-only /health or a public native HTML shell is never sufficient.
 for attempt in $(seq 1 90); do
   if docker exec "$CID" /opt/hermes-agent/.venv/bin/python \
       /release-tests/runtime_image_probe.py readiness; then

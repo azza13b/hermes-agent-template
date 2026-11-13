@@ -107,6 +107,16 @@ Railway Container
 
 The Hermes dashboard is **never exposed directly** — it binds loopback and is reachable only through the proxy, so one login covers both UIs. The gateway is supervised: if it crashes or is OOM-killed, `server.py` restarts it with backoff, giving up only if it fails repeatedly (Railway would not restart it on its own, because `server.py` is still alive and healthy).
 
+For v0.23.1, a saved `dashboard.public_url` requires native authentication even
+on loopback. The wrapper provisions a random, process-private deployment token
+only to its dashboard child, and authenticates upstream HTTP/WebSocket requests
+only after validating the admin cookie. This token is not stored in your profile,
+sent to the gateway, or published to the browser. Public URLs and native auth
+remain enabled; neither needs to be removed to make an existing volume boot.
+The native dashboard's logout button also clears the wrapper login. Release CI
+covers this public-URL upgrade case with protected APIs, a verified native
+identity, built UI assets, and an authenticated WebSocket—not just `/health`.
+
 Config lives on the `/data` volume at `/data/.hermes/` (`.env`, `config.yaml`, `auth.json`, sessions, pairing state) and survives redeploys. Gateway output is captured into a ring buffer and streamed to the Logs panel.
 
 ## Running Locally
