@@ -16,7 +16,7 @@ jobs:
     env:
       ADMIN_USERNAME: ci-fake-admin
       ADMIN_PASSWORD: CI-FAKE-NOT-A-REAL-PASSWORD
-      HERMES_HOME: ${{ runner.temp }}/hermes-release-unit-home
+      HERMES_HOME: /tmp/hermes-release-unit-home
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
