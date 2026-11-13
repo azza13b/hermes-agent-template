@@ -41,7 +41,7 @@ import zipfile
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
 import websockets
@@ -960,6 +960,22 @@ def _safe_return_to(value: str) -> str:
     return value
 
 
+def _same_browser_origin(request: Request | WebSocket) -> bool:
+    """Reject cross-origin browsers without breaking non-browser owner clients.
+
+    Match the public Host, not the internal scheme after Railway TLS termination.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    try:
+        parsed = urlsplit(origin)
+        return (parsed.scheme in {"http", "https"}
+                and parsed.netloc.lower() == request.headers.get("host", "").lower())
+    except ValueError:
+        return False
+
+
 def guard(request: Request) -> Response | None:
     """Enforce auth on protected routes.
 
@@ -967,6 +983,8 @@ def guard(request: Request) -> Response | None:
     - API / XHR: 401 JSON (so the SPA's fetch() can surface it cleanly)
     """
     if _is_authenticated(request):
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and not _same_browser_origin(request):
+            return JSONResponse({"error": "Forbidden origin"}, status_code=403)
         return None
     accept = request.headers.get("accept", "").lower()
     wants_html = "text/html" in accept
@@ -2311,6 +2329,12 @@ async def ws_proxy(websocket: WebSocket) -> None:
         # Close before accept — browser sees the handshake fail (expected
         # for unauthenticated calls).
         await websocket.close(code=4401)
+        return
+
+    # Native deployment tokens bypass native browser-origin checks. Check the
+    # outer browser's origin before lending our process-private credential.
+    if not _same_browser_origin(websocket):
+        await websocket.close(code=4403)
         return
 
     # Native WS supports a provider-verified deployment token in its query.

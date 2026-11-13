@@ -85,6 +85,7 @@ def checked_json(response):
 def websocket_readiness(cookie: str) -> None:
     from websockets.exceptions import InvalidStatus
     from websockets.sync.client import connect
+    from websockets.typing import Origin
 
     # /api/ws is the in-process JSON-RPC sidecar, not /api/pty (which spawns a
     # CLI) or a gateway start. No RPC, chat, provider, or model request is sent.
@@ -95,7 +96,13 @@ def websocket_readiness(cookie: str) -> None:
         except InvalidStatus as exc:
             require(exc.response.status_code in (401, 403),
                     f"unauthenticated /api/ws on {port}: expected auth rejection")
-    with connect("ws://127.0.0.1:8080/api/ws", proxy=None,
+    try:
+        with connect("ws://127.0.0.1:8080/api/ws", proxy=None, origin=Origin("https://attacker.invalid"),
+                     additional_headers={"Cookie": cookie}, open_timeout=5):
+            raise RuntimeError("cross-origin browser WebSocket accepted")
+    except InvalidStatus as exc:
+        require(exc.response.status_code == 403, "cross-origin WebSocket must be rejected")
+    with connect("ws://127.0.0.1:8080/api/ws", proxy=None, origin=Origin("http://127.0.0.1:8080"),
                  additional_headers={"Cookie": cookie}, open_timeout=15) as ws:
         # A completed upgrade plus a real pong proves both wrapper and upstream
         # admission; accepting only the outer socket and then closing won't pass.
@@ -168,7 +175,10 @@ def readiness() -> None:
         status = checked_json(browser.get(wrapper + "/api/status"))
         require(status.get("auth_required") is True, "native auth gate was disabled")
         require(status.get("gateway_running") is False, "smoke test must not start a gateway")
-        signed_out = browser.post(wrapper + "/auth/logout")
+        require(browser.post(wrapper + "/api/model/set", json={},
+                             headers={"Origin": "https://attacker.invalid"}).status_code == 403,
+                "cross-origin browser write must not receive native credentials")
+        signed_out = browser.post(wrapper + "/auth/logout", headers={"Origin": wrapper})
         require(signed_out.status_code == 302, "native logout did not redirect to login")
         require(browser.get(wrapper + "/api/config").status_code == 401,
                 "native logout must revoke the wrapper login cookie")
