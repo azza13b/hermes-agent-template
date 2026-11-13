@@ -66,6 +66,8 @@ def offline() -> None:
     node_version = command("node", "--version").strip()
     require(int(node_version.lstrip("v").split(".")[0]) >= 26, f"Node >=26 required: {node_version}")
     print(command(sys.executable, "/release-tests/native_config_probe.py"), end="")
+    print(command("env", "HERMES_DASHBOARD_SESSION_TOKEN=CI-FAKE-EMBEDDED-API-PROBE-NOT-A-REAL-SECRET",
+                  sys.executable, "/release-tests/native_gateway_api_probe.py"), end="")
     print(json.dumps({"python": sys.version.split()[0], "sqlite": sqlite3.sqlite_version,
                       "version": actual.display_version, "commit": actual.commit, "node": node_version,
                       "offline": "passed"}, sort_keys=True))

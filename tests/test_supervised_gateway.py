@@ -36,6 +36,17 @@ class SupervisedGatewayTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             respawn.assert_awaited_once_with(12345)
 
+    async def test_gateway_output_redacts_private_deployment_credential(self):
+        async def output():
+            yield ("native API credential=" + server.dash._session_token + "\n").encode()
+        gateway = server.Gateway()
+        process = MagicMock()
+        process.stdout = output()
+        gateway.proc = process
+        gateway._stopping = True
+        await gateway._drain(process)
+        self.assertNotIn(server.dash._session_token, "\n".join(gateway.logs))
+
     async def test_gateway_declares_external_supervisor(self):
         process = MagicMock(returncode=None)
         process.returncode = None
@@ -51,6 +62,10 @@ class SupervisedGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gateway.state, "running")
         self.assertIn("--external-supervisor", spawn.call_args.args)
         self.assertIn("--replace", spawn.call_args.args)
+        self.assertEqual(
+            spawn.call_args.kwargs["env"].get("HERMES_DASHBOARD_SESSION_TOKEN"),
+            server.dash._session_token,
+        )
 
 
 class ConfigSafetyTests(unittest.TestCase):

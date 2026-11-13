@@ -1143,6 +1143,9 @@ class Gateway:
         self._stopping = False
         try:
             env = build_hermes_env()
+            # The gateway also mounts the native dashboard API. Its public-URL
+            # auth gate needs the same process-private deployment provider.
+            env["HERMES_DASHBOARD_SESSION_TOKEN"] = dash._session_token
             model = env.get("LLM_MODEL", "")
             provider_key = next((env.get(k, "") for k in PROVIDER_KEYS if env.get(k)), "")
             print(f"[gateway] model={model or '⚠ NOT SET'} | provider_key={'set' if provider_key else '⚠ NOT SET'}", flush=True)
@@ -1205,6 +1208,7 @@ class Gateway:
         assert proc.stdout
         async for raw in proc.stdout:
             line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
+            line = line.replace(dash._session_token, "[redacted]")
             self.logs.append(line)
         rc = proc.returncode
         # Ignore the drain of a process we've already replaced (e.g. via restart()).

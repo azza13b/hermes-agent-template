@@ -109,9 +109,9 @@ The Hermes dashboard is **never exposed directly** — it binds loopback and is 
 
 For v0.23.1, a saved `dashboard.public_url` requires native authentication even
 on loopback. The wrapper provisions a random, process-private deployment token
-only to its dashboard child, and authenticates upstream HTTP/WebSocket requests
-only after validating the admin cookie. This token is not stored in your profile,
-sent to the gateway, or published to the browser. Public URLs and native auth
+for both its dashboard child and the gateway's embedded native API, and authenticates
+upstream HTTP/WebSocket requests only after validating the admin cookie. This token
+is not stored in your profile or published to the browser. Public URLs and native auth
 remain enabled; neither needs to be removed to make an existing volume boot.
 The native dashboard's logout button also clears the wrapper login. Release CI
 covers this public-URL upgrade case with protected APIs, a verified native
